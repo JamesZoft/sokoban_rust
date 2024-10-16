@@ -1,3 +1,5 @@
+use std::{collections::HashMap, vec};
+
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     layout::{Constraint, Layout},
@@ -11,32 +13,44 @@ use ratatui::{
 struct GameState {
     grid: Vec<Vec<char>>,
     player_position: (i32, i32),
-    level: Level,
+    level: Option<Level>,
+    scores: HashMap<Level, (i32, i32)>,
+}
+
+#[derive(PartialEq, Debug)]
+enum MoveDirection {
+    Up,
+    Right,
+    Down,
+    Left,
+}
+#[derive(PartialEq, Clone, Copy, Eq, Hash, Debug)]
+enum Level {
+    One,
+    Two,
+    Three,
+    Four,
+    Five,
+}
+#[derive(PartialEq)]
+enum Command {
+    Quit,
+    Move(MoveDirection),
+    LevelChoose,
+    LevelSelect(Level),
+    Reset,
 }
 
 fn main() -> std::io::Result<()> {
-    let mut terminal: Terminal<CrosstermBackend<std::io::Stdout>> = ratatui::init();
-    let mut game_state = GameState {
-        grid: vec!["Welcome!".chars().collect::<Vec<_>>()],
-        player_position: (0, 0),
-        level: Level::One,
-    };
+    let (mut game_state, mut terminal) = startup();
     loop {
         if let Event::Key(key) = event::read()? {
-            if let Some(command) = read_input(key) {
-                match command {
-                    Command::Quit => break,
-                    Command::Reset => {
-                        (game_state.grid, game_state.player_position) =
-                            start_level(game_state.level)
-                    }
-                    Command::LevelChoose => choose_level(&mut game_state),
-                    Command::Move(direction) => player_move(direction, &mut game_state),
-                    Command::LevelSelect(level) => {
-                        (game_state.grid, game_state.player_position) = start_level(level)
-                    }
-                }
+            let ret = do_action(&mut game_state, key);
+            if ret == 1 {
+                break;
             }
+            finish_if_solved(&mut game_state);
+
             let _ = terminal.draw(|frame| {
                 let areas = Layout::vertical(vec![Constraint::Length(1); game_state.grid.len()])
                     .split(frame.area());
@@ -52,21 +66,202 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn choose_level(game_state: &mut GameState) {
-    game_state.grid = vec!["Choose level:".chars().collect::<Vec<_>>(), vec!['1']];
+fn do_action(game_state: &mut GameState, key: KeyEvent) -> i32 {
+    if let Some(command) = read_input(key) {
+        return match command {
+            Command::Quit => 1,
+            Command::Reset => {
+                if let Some(cur_level) = game_state.level {
+                    if game_state.level.is_some() {
+                        start_level(game_state, cur_level);
+                    }
+                }
+                return 0;
+            }
+            Command::LevelChoose => {
+                choose_level(game_state);
+                return 0;
+            }
+            Command::Move(direction) => {
+                player_move(direction, game_state);
+                return 0;
+            }
+            Command::LevelSelect(level) => {
+                start_level(game_state, level);
+                game_state.level = Some(level);
+                return 0;
+            }
+        };
+    }
+    return -1;
 }
 
-fn start_level(_level: Level) -> (Vec<Vec<char>>, (i32, i32)) {
-    return (
-        vec![
-            vec!['#', '#', '#', '#', '#'],
-            vec!['#', ' ', ' ', ' ', '#'],
-            vec!['#', '.', '$', '@', '#'],
-            vec!['#', ' ', ' ', ' ', '#'],
-            vec!['#', '#', '#', '#', '#'],
-        ],
-        (3, 2),
-    );
+fn startup() -> (GameState, Terminal<CrosstermBackend<std::io::Stdout>>) {
+    let mut terminal: Terminal<CrosstermBackend<std::io::Stdout>> = ratatui::init();
+    let game_state = GameState {
+        grid: vec!["Welcome! Press \"m\" to go to level select."
+            .chars()
+            .collect::<Vec<_>>()],
+        player_position: (0, 0),
+        level: None,
+        scores: HashMap::new(),
+    };
+    let _ = terminal.draw(|frame| {
+        let areas = Layout::vertical(vec![Constraint::Length(1); game_state.grid.len()])
+            .split(frame.area());
+
+        // use the simpler short-hand syntax
+        game_state.grid.iter().enumerate().for_each(|(idx, row)| {
+            frame.render_widget(Paragraph::new(String::from_iter(row)).blue(), areas[idx]);
+        });
+    });
+    return (game_state, terminal);
+}
+
+fn finish_if_solved(game_state: &mut GameState) {
+    if game_state
+        .grid
+        .iter()
+        .flatten()
+        .find(|c| **c == '$')
+        .is_none()
+        && game_state.level.is_some()
+    {
+        let cur_level = game_state.level.unwrap();
+        let (high_score, cur_score) = game_state.scores.get(&cur_level).unwrap();
+        if cur_score < high_score || *high_score == 0 {
+            game_state.grid = vec![format!("You won! New record - you completed this level in {} moves. Your lowest number of moves for this level previously was {}. Press \"m\" to go back to the main menu.", cur_score, high_score)
+            .chars()
+            .collect::<Vec<_>>()];
+            game_state.scores.insert(cur_level, (*cur_score, 0));
+        } else {
+            game_state.grid = vec![format!("You won! You completed this level in {} moves. Your lowest number of moves for this level is {}. Press \"m\" to go back to the main menu.", cur_score, high_score)
+                .chars()
+                .collect::<Vec<_>>()];
+        }
+        game_state.level = None;
+    }
+}
+fn choose_level(game_state: &mut GameState) {
+    game_state.grid = vec![
+        "Choose level:".chars().collect::<Vec<_>>(),
+        "1 - Tutorial".chars().collect::<Vec<_>>(),
+        "2 - Easy".chars().collect::<Vec<_>>(),
+        "3 - Medium".chars().collect::<Vec<_>>(),
+        "4 - Hard".chars().collect::<Vec<_>>(),
+    ];
+}
+
+fn start_level(game_state: &mut GameState, level: Level) {
+    game_state
+        .scores
+        .entry(level)
+        .and_modify(|val| val.1 = 0)
+        .or_insert((0, 0));
+
+    (game_state.grid, game_state.player_position) = match level {
+        Level::One => (
+            vec![
+                vec!['#', '#', '#', '#', '#'],
+                vec!['#', ' ', ' ', ' ', '#'],
+                vec!['#', '.', '$', '@', '#'],
+                vec!['#', ' ', ' ', ' ', '#'],
+                vec!['#', '#', '#', '#', '#'],
+            ],
+            (3, 2),
+        ),
+        Level::Two => (
+            vec![
+                vec![' ', ' ', ' ', ' ', ' ', '#', '#', '#', '#'],
+                vec!['#', '#', '#', '#', '#', '#', ' ', ' ', '#'],
+                vec!['#', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '#'],
+                vec!['#', ' ', ' ', ' ', ' ', ' ', ' ', '.', '#'],
+                vec!['#', '@', ' ', '#', '#', '#', '#', '#', '#', '#'],
+                vec!['#', '#', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '#'],
+                vec![' ', '#', ' ', '#', ' ', '#', ' ', ' ', ' ', '#'],
+                vec![' ', '#', ' ', ' ', ' ', ' ', ' ', '$', ' ', '#'],
+                vec![' ', '#', ' ', ' ', ' ', '#', '#', '#', '#', '#'],
+                vec![' ', '#', '#', '#', '#', '#'],
+            ],
+            (1, 4),
+        ),
+        Level::Three => (
+            vec![
+                vec![
+                    '#', '#', '#', '#', '#', ' ', ' ', '#', '#', '#', '#', ' ', ' ', '#', '#', '#',
+                    '#', '#',
+                ],
+                vec![
+                    '#', ' ', ' ', ' ', '#', '#', '#', '#', ' ', ' ', '#', '#', '#', '#', ' ', ' ',
+                    ' ', '#',
+                ],
+                vec![
+                    '#', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                    ' ', '#',
+                ],
+                vec![
+                    '#', '#', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '#', '#', '#', ' ', ' ', ' ',
+                    '#', '#',
+                ],
+                vec![
+                    ' ', '#', '#', ' ', '$', ' ', ' ', '#', ' ', '.', '.', ' ', '$', ' ', '@', '#',
+                    '#',
+                ],
+                vec![
+                    '#', '#', ' ', ' ', '#', '#', ' ', ' ', ' ', '#', '#', '#', '#', ' ', ' ', ' ',
+                    '#', '#',
+                ],
+                vec![
+                    '#', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                    ' ', '#',
+                ],
+                vec![
+                    '#', ' ', ' ', ' ', '#', '#', '#', '#', '#', '#', '#', '#', '#', '#', ' ', ' ',
+                    ' ', '#',
+                ],
+                vec![
+                    '#', '#', '#', '#', '#', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '#', '#', '#',
+                    '#', '#',
+                ],
+            ],
+            (3, 2),
+        ),
+        Level::Four => (
+            vec![
+                vec![' ', '#', '#', '#', '#', '#'],
+                vec!['#', '#', ' ', ' ', ' ', '#'],
+                vec!['#', ' ', ' ', ' ', ' ', '#', '#'],
+                vec!['#', ' ', ' ', '#', ' ', ' ', '#'],
+                vec!['#', ' ', '$', '#', ' ', '.', '#', '#', '#'],
+                vec!['#', ' ', ' ', '#', '*', '.', ' ', ' ', '#'],
+                vec!['#', ' ', '$', ' ', '$', '.', ' ', ' ', '#'],
+                vec!['#', ' ', ' ', '#', '$', '.', '#', '#', '#'],
+                vec!['#', '#', '#', '#', ' ', '.', '#'],
+                vec![' ', ' ', '#', '#', '$', '.', '#'],
+                vec![' ', ' ', '#', ' ', '$', '*', '#'],
+                vec![' ', ' ', '#', ' ', ' ', '@', '#'],
+                vec![' ', ' ', '#', '#', '#', '#', '#'],
+            ],
+            (3, 2),
+        ),
+        Level::Five => (
+            vec![
+                vec![' ', '#', '#', '#', '#'],
+                vec!['#', '#', ' ', ' ', '#', '#', '#'],
+                vec!['#', ' ', ' ', ' ', ' ', ' ', '#', '#', '#'],
+                vec!['#', ' ', '#', '*', '*', '*', '.', ' ', '#'],
+                vec!['#', ' ', ' ', '*', ' ', ' ', '#', ' ', '#'],
+                vec!['#', ' ', ' ', '*', ' ', ' ', ' ', ' ', '#'],
+                vec!['#', ' ', ' ', '*', '*', '*', '#', '#', '#', '#'],
+                vec!['#', '#', '#', '#', ' ', ' ', '*', ' ', ' ', '#'],
+                vec![' ', '#', ' ', '*', ' ', ' ', '*', ' ', ' ', '#'],
+                vec![' ', '#', ' ', '$', '*', '*', ' ', ' ', ' ', '#'],
+                vec![' ', '#', ' ', ' ', ' ', '@', '#', ' ', ' ', '#'],
+                vec![' ', '#', '#', '#', '#', '#', '#', '#', '#', '#'],
+            ],
+            (3, 2),
+        ),
+    };
 }
 
 fn player_move(direction: MoveDirection, game_state: &mut GameState) {
@@ -120,6 +315,11 @@ fn player_move(direction: MoveDirection, game_state: &mut GameState) {
         set_grid_cell(&mut game_state.grid, &current_player_position, '.');
     }
     game_state.player_position = next_player_position;
+    game_state
+        .scores
+        .entry(game_state.level.unwrap())
+        .and_modify(|val| val.1 += 1)
+        .or_insert((0, 0));
 }
 
 fn set_grid_cell(grid: &mut Vec<Vec<char>>, coords: &(i32, i32), contents: char) {
@@ -134,7 +334,10 @@ fn next_position(
     match direction {
         MoveDirection::Up => (current_position.0, std::cmp::max(0, current_position.1 - 1)),
         MoveDirection::Right => (
-            std::cmp::min(game_state.grid[0].len() as i32 - 1, current_position.0 + 1),
+            std::cmp::min(
+                game_state.grid[current_position.1 as usize].len() as i32 - 1,
+                current_position.0 + 1,
+            ),
             current_position.1,
         ),
         MoveDirection::Down => (
@@ -143,26 +346,6 @@ fn next_position(
         ),
         MoveDirection::Left => (std::cmp::max(0, current_position.0 - 1), current_position.1),
     }
-}
-
-#[derive(PartialEq, Debug)]
-enum MoveDirection {
-    Up,
-    Right,
-    Down,
-    Left,
-}
-#[derive(PartialEq, Clone, Copy)]
-enum Level {
-    One,
-}
-#[derive(PartialEq)]
-enum Command {
-    Quit,
-    Move(MoveDirection),
-    LevelChoose,
-    LevelSelect(Level),
-    Reset,
 }
 
 fn read_input(key: KeyEvent) -> Option<Command> {
@@ -186,6 +369,18 @@ fn read_input(key: KeyEvent) -> Option<Command> {
     }
     if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('1') {
         return Some(Command::LevelSelect(Level::One));
+    }
+    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('2') {
+        return Some(Command::LevelSelect(Level::Two));
+    }
+    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('3') {
+        return Some(Command::LevelSelect(Level::Three));
+    }
+    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('4') {
+        return Some(Command::LevelSelect(Level::Four));
+    }
+    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('5') {
+        return Some(Command::LevelSelect(Level::Five));
     }
     if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('r') {
         return Some(Command::Reset);
