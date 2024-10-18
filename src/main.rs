@@ -9,15 +9,21 @@ use ratatui::{
     Terminal::{self},
 };
 
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
+use rodio::*;
+use std::fs::File;
+use std::io::BufReader;
+
 #[derive(Clone)]
 struct GameState {
     grid: Vec<Vec<char>>,
     player_position: (i32, i32),
     level: Option<Level>,
     scores: HashMap<Level, (i32, i32)>,
+    moves: Vec<MoveDirection>,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 enum MoveDirection {
     Up,
     Right,
@@ -39,13 +45,25 @@ enum Command {
     LevelChoose,
     LevelSelect(Level),
     Reset,
+    ReverseMove,
+}
+
+enum SoundType {
+    Oof,
+    BarrelMove,
+    BarrelCorrect,
+    WinGame,
+    BarrelOof,
+    PlayerMove,
 }
 
 fn main() -> std::io::Result<()> {
     let (mut game_state, mut terminal) = startup();
+    let (_stream, handle) = rodio::OutputStream::try_default().unwrap();
+    let sink = rodio::Sink::try_new(&handle).unwrap();
     loop {
         if let Event::Key(key) = event::read()? {
-            let ret = do_action(&mut game_state, key);
+            let ret = do_action(&mut game_state, key, &sink);
             if ret == 1 {
                 break;
             }
@@ -66,7 +84,7 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn do_action(game_state: &mut GameState, key: KeyEvent) -> i32 {
+fn do_action(game_state: &mut GameState, key: KeyEvent, sink: &Sink) -> i32 {
     if let Some(command) = read_input(key) {
         return match command {
             Command::Quit => 1,
@@ -83,12 +101,25 @@ fn do_action(game_state: &mut GameState, key: KeyEvent) -> i32 {
                 return 0;
             }
             Command::Move(direction) => {
-                player_move(direction, game_state);
+                player_move(direction, game_state, true, sink);
                 return 0;
             }
             Command::LevelSelect(level) => {
                 start_level(game_state, level);
                 game_state.level = Some(level);
+                return 0;
+            }
+            Command::ReverseMove => {
+                if game_state.moves.len() == 0 {
+                    return 0;
+                }
+                let direction = match game_state.moves.pop().unwrap() {
+                    MoveDirection::Up => MoveDirection::Down,
+                    MoveDirection::Down => MoveDirection::Up,
+                    MoveDirection::Left => MoveDirection::Right,
+                    MoveDirection::Right => MoveDirection::Left,
+                };
+                player_move(direction, game_state, false, sink);
                 return 0;
             }
         };
@@ -105,6 +136,7 @@ fn startup() -> (GameState, Terminal<CrosstermBackend<std::io::Stdout>>) {
         player_position: (0, 0),
         level: None,
         scores: HashMap::new(),
+        moves: vec![],
     };
     let _ = terminal.draw(|frame| {
         let areas = Layout::vertical(vec![Constraint::Length(1); game_state.grid.len()])
@@ -153,6 +185,7 @@ fn choose_level(game_state: &mut GameState) {
 }
 
 fn start_level(game_state: &mut GameState, level: Level) {
+    game_state.moves = vec![];
     game_state
         .scores
         .entry(level)
@@ -264,7 +297,12 @@ fn start_level(game_state: &mut GameState, level: Level) {
     };
 }
 
-fn player_move(direction: MoveDirection, game_state: &mut GameState) {
+fn player_move(
+    direction: MoveDirection,
+    game_state: &mut GameState,
+    record_as_move: bool,
+    sink: &Sink,
+) {
     let current_player_position = game_state.player_position;
     let next_player_position = next_position(&direction, &current_player_position, game_state);
 
@@ -274,6 +312,7 @@ fn player_move(direction: MoveDirection, game_state: &mut GameState) {
         game_state.grid[current_player_position.1 as usize][current_player_position.0 as usize];
 
     if next_player_position_contents == '#' {
+        play_sound(SoundType::Oof, sink);
         return;
     }
     if next_player_position_contents == ' ' {
@@ -291,6 +330,7 @@ fn player_move(direction: MoveDirection, game_state: &mut GameState) {
             || next_player_position_plusone_contents == '*'
             || next_player_position_plusone_contents == '#'
         {
+            play_sound(SoundType::BarrelOof, sink);
             return;
         }
 
@@ -315,6 +355,9 @@ fn player_move(direction: MoveDirection, game_state: &mut GameState) {
         set_grid_cell(&mut game_state.grid, &current_player_position, '.');
     }
     game_state.player_position = next_player_position;
+    if record_as_move {
+        game_state.moves.push(direction);
+    }
     game_state
         .scores
         .entry(game_state.level.unwrap())
@@ -385,5 +428,20 @@ fn read_input(key: KeyEvent) -> Option<Command> {
     if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('r') {
         return Some(Command::Reset);
     }
+    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('b') {
+        return Some(Command::ReverseMove);
+    }
     return None;
+}
+
+fn play_sound(sound_type: SoundType, sink: &Sink) {
+    let path = match sound_type {
+        SoundType::Oof => "src\\oof.mp3",
+        SoundType::BarrelMove => "src\\metal-moving.mp3",
+        SoundType::BarrelOof => "src\\box-crash.mp3",
+        _ => "",
+    };
+
+    let file = std::fs::File::open(path).unwrap();
+    sink.append(rodio::Decoder::new(BufReader::new(file)).unwrap());
 }
