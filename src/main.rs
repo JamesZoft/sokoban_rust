@@ -67,7 +67,7 @@ fn main() -> std::io::Result<()> {
             if ret == 1 {
                 break;
             }
-            finish_if_solved(&mut game_state);
+            finish_if_solved(&mut game_state, &sink);
 
             let _ = terminal.draw(|frame| {
                 let areas = Layout::vertical(vec![Constraint::Length(1); game_state.grid.len()])
@@ -150,7 +150,7 @@ fn startup() -> (GameState, Terminal<CrosstermBackend<std::io::Stdout>>) {
     return (game_state, terminal);
 }
 
-fn finish_if_solved(game_state: &mut GameState) {
+fn finish_if_solved(game_state: &mut GameState, sink: &Sink) {
     if game_state
         .grid
         .iter()
@@ -159,6 +159,7 @@ fn finish_if_solved(game_state: &mut GameState) {
         .is_none()
         && game_state.level.is_some()
     {
+        play_sound(SoundType::WinGame, sink);
         let cur_level = game_state.level.unwrap();
         let (high_score, cur_score) = game_state.scores.get(&cur_level).unwrap();
         if cur_score < high_score || *high_score == 0 {
@@ -317,9 +318,11 @@ fn player_move(
     }
     if next_player_position_contents == ' ' {
         set_grid_cell(&mut game_state.grid, &next_player_position, '@');
+        play_sound(SoundType::PlayerMove, sink)
     }
     if next_player_position_contents == '.' {
         set_grid_cell(&mut game_state.grid, &next_player_position, '+');
+        play_sound(SoundType::PlayerMove, sink)
     }
     if next_player_position_contents == '$' || next_player_position_contents == '*' {
         let next_player_position_plusone =
@@ -336,9 +339,11 @@ fn player_move(
 
         if next_player_position_plusone_contents == ' ' {
             set_grid_cell(&mut game_state.grid, &next_player_position_plusone, '$');
+            play_sound(SoundType::BarrelMove, sink)
         }
         if next_player_position_plusone_contents == '.' {
             set_grid_cell(&mut game_state.grid, &next_player_position_plusone, '*');
+            play_sound(SoundType::BarrelCorrect, sink);
         }
 
         if next_player_position_contents == '$' {
@@ -439,9 +444,13 @@ fn play_sound(sound_type: SoundType, sink: &Sink) {
         SoundType::Oof => "src\\oof.mp3",
         SoundType::BarrelMove => "src\\metal-moving.mp3",
         SoundType::BarrelOof => "src\\box-crash.mp3",
+        SoundType::BarrelCorrect => "src\\tada.mp3",
+        SoundType::WinGame => "src\\level-win.mp3",
         _ => "",
     };
 
-    let file = std::fs::File::open(path).unwrap();
-    sink.append(rodio::Decoder::new(BufReader::new(file)).unwrap());
+    if path != "" {
+        let file = std::fs::File::open(path).unwrap();
+        sink.append(rodio::Decoder::new(BufReader::new(file)).unwrap());
+    }
 }
